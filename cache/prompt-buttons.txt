@@ -1,0 +1,7 @@
+WindowsForms10.STATIC.app.0.e40d4d_r13_ad1 :: 发现新版本 DeepSeek Harness 0.1.5-rc.1
+WindowsForms10.STATIC.app.0.e40d4d_r13_ad1 :: 当前版本：0.1.2-rc.1
+
+「立即升级」会下载新版本并自动重启服务，下载期间会显示进度窗口；升级失败会自动回滚到当前版本。
+WindowsForms10.BUTTON.app.0.e40d4d_r13_ad1 :: 立即升级
+WindowsForms10.BUTTON.app.0.e40d4d_r13_ad1 :: 以后再说
+WindowsForms10.BUTTON.app.0.e40d4d_r13_ad1 :: 不再提示此版本

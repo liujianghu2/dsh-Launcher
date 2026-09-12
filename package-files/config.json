@@ -1,0 +1,12 @@
+{
+  "port": 3080,
+  "registries": [
+    "https://registry.npmjs.org",
+    "https://registry.npmmirror.com",
+    "https://mirrors.cloud.tencent.com/npm",
+    "https://mirrors.huaweicloud.com/repository/npm"
+  ],
+  "channel": "latest",
+  "checkUpdates": true,
+  "updateCheckHours": 6
+}
