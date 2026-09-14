@@ -2,12 +2,12 @@
  * One-click lifecycle host for the locally installed DeepSeek Harness Web UI.
  *
  * The Harness ships as a command-line program. This script turns that program
- * into a launchable local application: it boots `dsh web` as a detached
- * background process, waits until the Web UI answers, and reports where it
- * runs. Because `dsh web` mints the browser session cookie itself, this script
- * never opens a URL it cannot authenticate — a cold start lets the Harness
- * perform its own authenticated browser handoff, and a warm start reuses the
- * cookie the browser already holds.
+ * into a launchable local application: it boots `dsh web` as a background
+ * process, shows a window while it comes up, waits until the Web UI answers,
+ * and reports where it runs. Because `dsh web` mints the browser session cookie
+ * itself, this script never opens a URL it cannot authenticate — a cold start
+ * lets the Harness perform its own authenticated browser handoff, and a warm
+ * start reuses the cookie the browser already holds.
  *
  * Commands: start (default), stop, restart, status, open, console, logs,
  * check, update, autostart.
@@ -257,7 +257,9 @@ function isHarness(answer) {
 
 /** Open a URL in the user's default browser. */
 function openBrowser(url = APP_URL) {
-  spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore', windowsHide: true }).unref()
+  // Not detached for the same reason as the server: on Windows that flag asks
+  // for the child's own console, which would flash a window on every launch.
+  spawn('cmd', ['/c', 'start', '', url], { stdio: 'ignore', windowsHide: true }).unref()
 }
 
 /**
@@ -647,24 +649,34 @@ async function stopForUpgrade() {
 
 /**
  * Boot the installed Harness and confirm it answers.
+ *
+ * The server starts through `run-server.vbs`, which gives it its own hidden
+ * console. Starting it directly is not an option on Windows: a detached child
+ * outlives this launcher but is also given a visible console that every process
+ * the agent spawns inherits — the black windows users see — while a
+ * non-detached child is console-free but dies with the launcher.
  * @returns true only when the Web UI becomes reachable.
  */
 async function startAndVerify() {
-  const out = openSync(LOG_FILE, 'a')
-  const child = spawn(NODE_EXE, [DSH_ENTRY, 'web', '--port', String(PORT)], {
+  const wscript = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'wscript.exe')
+  const runner = join(BIN_DIR, 'run-server.vbs')
+  if (!existsSync(runner)) {
+    note(`缺少启动脚本：${runner}`)
+    return false
+  }
+  const launcher = spawn(wscript, [runner, String(PORT)], {
     cwd: WORK_DIR,
-    detached: true,
     windowsHide: true,
-    stdio: ['ignore', out, out],
-    env: { ...process.env, DSH_WEB_APP_LAUNCHER: '1' },
+    stdio: 'ignore',
   })
-  closeSync(out)
-  if (child.pid === undefined) return false
-  let exited = false
-  child.once('exit', () => { exited = true })
-  writeFileSync(PID_FILE, String(child.pid), 'utf8')
-  child.unref()
-  return await waitForReady(READY_TIMEOUT_MS, () => exited)
+  launcher.unref()
+  const ready = await waitForReady(READY_TIMEOUT_MS, () => false)
+  if (!ready) return false
+  // The script exits immediately, so the serving process is identified from the
+  // port it holds rather than from a child handle.
+  const pid = portOwnerPid()
+  if (pid !== undefined) writeFileSync(PID_FILE, String(pid), 'utf8')
+  return true
 }
 
 /**
@@ -805,7 +817,7 @@ function logTail(lines = 20) {
   return content.slice(-lines).join('\n')
 }
 
-/** Boot the Harness Web UI as a detached background process. */
+/** Boot the Harness Web UI as a background process. */
 async function start() {
   rmSync(ERROR_FILE, { force: true })
 
@@ -835,9 +847,14 @@ async function start() {
 
   try {
     note('正在启动 DeepSeek Harness…')
-    if (!await startAndVerify()) {
-      fail('DeepSeek Harness 启动失败。', logTail())
-      return
+    const splash = showSplash()
+    try {
+      if (!await startAndVerify()) {
+        fail('DeepSeek Harness 启动失败。', logTail())
+        return
+      }
+    } finally {
+      closeSplash(splash)
     }
     note(`DeepSeek Harness 已就绪：${APP_URL}`)
   } finally {
@@ -853,14 +870,14 @@ async function start() {
 /**
  * Start the background process that offers an available upgrade.
  *
- * It is detached because this launcher exits as soon as the server is up; the
- * notice has to outlive it to keep its dialog on screen.
+ * It has to outlive this launcher, which exits as soon as the server is up, so
+ * it is only unref'd — not detached, which on Windows would give it the visible
+ * console window this whole arrangement exists to avoid.
  */
 function spawnUpdateNotice() {
   try {
     const child = spawn(NODE_EXE, [fileURLToPath(import.meta.url), 'notify-update'], {
       cwd: WORK_DIR,
-      detached: true,
       windowsHide: true,
       stdio: 'ignore',
     })
@@ -896,6 +913,67 @@ async function notifyUpdate() {
   } finally {
     releaseLock(lock)
   }
+}
+
+/**
+ * Show a "starting" window while the server boots.
+ *
+ * A shortcut launch is silent, and a first start can take ten seconds or more;
+ * without this the user sees nothing at all and reasonably concludes the click
+ * did nothing. The window closes itself if the launcher dies before removing
+ * it, so a crash cannot leave it on screen forever.
+ *
+ * The window is requested explicitly by the shortcut wrapper rather than
+ * inferred from the terminal, because a shortcut launch still has a hidden
+ * console attached and would otherwise look interactive.
+ * @returns the splash process, or undefined when one is not wanted or could not start.
+ */
+function showSplash() {
+  if (!WANT_SPLASH) return undefined
+  const script = [
+    'Add-Type -AssemblyName System.Windows.Forms',
+    'Add-Type -AssemblyName System.Drawing',
+    '$form = New-Object System.Windows.Forms.Form',
+    `$form.Text = ${psLiteral('DeepSeek Harness')}`,
+    '$form.Size = New-Object System.Drawing.Size(420, 150)',
+    "$form.StartPosition = 'CenterScreen'",
+    "$form.FormBorderStyle = 'FixedToolWindow'",
+    '$form.ShowInTaskbar = $false',
+    '$form.TopMost = $true',
+    "$form.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 10)",
+    '$label = New-Object System.Windows.Forms.Label',
+    `$label.Text = ${psLiteral('正在启动 DeepSeek Harness，请稍候…')}`,
+    '$label.SetBounds(24, 24, 360, 26)',
+    '$form.Controls.Add($label)',
+    '$hint = New-Object System.Windows.Forms.Label',
+    `$hint.Text = ${psLiteral('首次启动需要十几秒，启动完成后会自动打开浏览器。')}`,
+    '$hint.ForeColor = [System.Drawing.Color]::Gray',
+    '$hint.SetBounds(24, 54, 360, 22)',
+    '$form.Controls.Add($hint)',
+    '$timer = New-Object System.Windows.Forms.Timer',
+    '$timer.Interval = 180000',
+    "$timer.Add_Tick({ $timer.Stop(); $form.Close() })",
+    '$timer.Start()',
+    'if ($form.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { }',
+  ].join('; ')
+  try {
+    const child = spawn(process.env.SystemRoot === undefined
+      ? 'powershell.exe'
+      : join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
+      '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
+      '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
+    ], { stdio: 'ignore', windowsHide: false })
+    child.unref()
+    return child
+  } catch {
+    return undefined
+  }
+}
+
+/** Close the splash window, if one is showing. */
+function closeSplash(splash) {
+  if (splash?.pid === undefined) return
+  spawnSync('taskkill', ['/PID', String(splash.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
 }
 
 /** Stop the background server this launcher started. */
@@ -1099,6 +1177,8 @@ async function open() {
 
 /** `--yes` / `-y` answers the upgrade question in advance. */
 const UNATTENDED = process.argv.slice(3).some(argument => argument === '--yes' || argument === '-y')
+/** `--splash` asks for the startup window, which only a shortcut launch wants. */
+const WANT_SPLASH = process.argv.slice(2).includes('--splash')
 
 const COMMANDS = {
   start: async () => { await start() },

@@ -102,7 +102,8 @@ $nodeResolution
 
 $readUtf8
 
-command = """" & nodeExe & """ """ & root & "\bin\dsh-app.mjs"" start"
+' --splash shows the starting window: a shortcut launch has no other feedback.
+command = """" & nodeExe & """ """ & root & "\bin\dsh-app.mjs"" start --splash"
 status = shell.Run(command, 0, True)
 
 If status <> 0 Then
@@ -114,6 +115,39 @@ If status <> 0 Then
   message = message & vbCrLf & vbCrLf & "完整日志：" & root & "\logs\dsh-web.log"
   MsgBox message, 16, "DeepSeek Harness"
 End If
+"@
+
+<#
+  The server is launched from a script rather than directly from the launcher
+  because of two Windows behaviours that pull in opposite directions:
+
+  - A child must be created detached to outlive the launcher that started it.
+  - `detached` also asks for the child's own console, and `windowsHide` cannot
+    suppress it, so the server would own a visible console window that every
+    process the agent spawns inherits. That is the black window users see.
+
+  `WshShell.Run` with window style 0 resolves both: the server gets its own
+  console, hidden, and it is independent of this script, which exits at once.
+#>
+$serverScript = @"
+' DeepSeek Harness - boot the server with its own hidden console.
+Option Explicit
+
+Dim shell, fso, root, nodeExe, port, quote, entry, logFile, command
+Set shell = CreateObject("WScript.Shell")
+Set fso = CreateObject("Scripting.FileSystemObject")
+root = fso.GetParentFolderName(fso.GetParentFolderName(WScript.ScriptFullName))
+port = WScript.Arguments(0)
+
+$nodeResolution
+
+quote = """"
+entry = root & "\app\node_modules\@deepseek-ai\dsh\lib\bin.js"
+logFile = root & "\logs\dsh-web.log"
+' cmd strips the first and last quote of /c, so the whole command is wrapped in
+' a second pair; a single leading quote mis-parses the quoted program path.
+command = "cmd.exe /c " & quote & quote & nodeExe & quote & " " & quote & entry & quote & " web --port " & port & " >> " & quote & logFile & quote & " 2>&1" & quote
+shell.Run command, 0, False
 "@
 
 $stopScript = @"
@@ -184,6 +218,7 @@ $unicode = [System.Text.UnicodeEncoding]::new($false, $true)
 [System.IO.File]::WriteAllText((Join-Path $BinDir 'start.vbs'), $startScript, $unicode)
 [System.IO.File]::WriteAllText((Join-Path $BinDir 'stop.vbs'), $stopScript, $unicode)
 [System.IO.File]::WriteAllText((Join-Path $BinDir 'update.vbs'), $updateScript, $unicode)
+[System.IO.File]::WriteAllText((Join-Path $BinDir 'run-server.vbs'), $serverScript, $unicode)
 
 $logFile = Join-Path $LogDir 'dsh-web.log'
 if (-not (Test-Path -LiteralPath $logFile)) { New-Item -ItemType File -Path $logFile | Out-Null }

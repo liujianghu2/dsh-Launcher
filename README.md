@@ -124,6 +124,41 @@ npm error notarget No matching version found for @deepseek-ai/dsh-client-ui-...@
 | 应用图标 | 替换本机 `assets\dsh.ico` 后完整重建 |
 | 更新内置的 dsh | 在本机 `app\` 目录执行 `npm install @deepseek-ai/dsh@latest`，再完整重建 |
 
+## 实现要点与踩过的坑
+
+### 黑色命令行窗口的来源
+
+**根因是 `detached`。** Node 在 Windows 上会给 `detached: true` 的子进程**分配一个自己的控制台窗口**，而且 `CREATE_NO_WINDOW`（即 `windowsHide`）与 `DETACHED_PROCESS` 同时指定时会被忽略。于是 Harness 服务进程持有一个**可见的控制台**，它启动的每个子进程（agent 每执行一次 shell 命令都会起一个 job runner）都继承这个控制台——Windows Terminal 便时不时弹出黑色窗口。
+
+对照实验（起一个 15 秒的探针进程，统计可见控制台窗口数量）：
+
+| 启动方式 | 新增可见控制台 |
+|---|---|
+| `detached: true` + `windowsHide: true` | **+1**（标题为 node.exe 路径） |
+| `detached: false` + `windowsHide: true` | 0 |
+
+但直接去掉 `detached` 不可行：实测**非 detached 的子进程会随启动器一起退出**，服务活不下来。
+
+**解法**：服务改由 `bin\run-server.vbs` 启动，脚本内用 `WshShell.Run(cmd, 0, False)`。窗口样式 0 让服务获得**自己的、隐藏的**控制台，同时它与脚本相互独立、可以长期存活；输出仍用 `cmd /c ... >> logs\dsh-web.log 2>&1` 重定向。这样既保住独立性，又让 agent 的子进程继承一个隐藏控制台，不再申请新的可见窗口。
+
+`openBrowser` 与升级提示进程也一并去掉了 `detached`（浏览器那步只是 `cmd /c start`，不需要独立进程组）。
+
+### 启动时的等待提示
+
+快捷方式启动是静默的，首次启动要十几秒，用户很容易以为没点上。现在 `start.vbs` 传 `--splash`，启动器立刻弹出居中的「正在启动 DeepSeek Harness，请稍候…」小窗，服务就绪后自动关闭；窗口自带 3 分钟超时，启动器意外退出也不会把它永久留在屏幕上。
+
+判断依据是**显式参数**而非 `isTTY`：`WshShell.Run(cmd, 0, ...)` 会给 node 一个隐藏控制台，`process.stdout.isTTY` 因此为真，用它会把快捷方式启动误判成控制台启动而跳过提示。`dsh.cmd start` 不带该参数，命令行用户仍只看控制台输出。
+
+### VBS 读 UTF-8 会乱码
+
+`FileSystemObject.OpenTextFile` 只支持 ANSI 和 UTF-16，没有 UTF-8 模式。启动器写的是 UTF-8，脚本按系统代码页（GBK）读出来就是 `褰撳墠鐗堟湰`。改用 `ADODB.Stream`（`Charset = "utf-8"`）——这是 Windows Script Host 里唯一能正确读 UTF-8 的途径。
+
+### `windowsHide` 会把对话框一起藏掉
+
+`spawnSync(..., { windowsHide: true })` 给子进程设置 `STARTF_USESHOWWINDOW` + `SW_HIDE`，WinForms 窗体第一次 `ShowWindow` 会继承它，于是对话框被创建、`ShowDialog()` 正常阻塞，但**永远不可见**（进程 `MainWindowHandle` 为 0）。改为 `windowsHide: false` + PowerShell 自己的 `-WindowStyle Hidden` 抑制控制台即可。这个问题很隐蔽：日志、退出码全部正常，只有去读窗口句柄才能发现。
+
+另外弹窗超时不能沿用默认的 120 秒——用户还没点，对话框就被杀掉（会被当成「以后再说」）。升级询问用 12 小时上限。
+
 ## 分发注意事项
 
 - **Windows SmartScreen**：安装包没有代码签名，对方首次运行会看到「已保护你的电脑」的蓝色提示，需要点「更多信息 → 仍要运行」。
@@ -146,7 +181,10 @@ npm error notarget No matching version found for @deepseek-ai/dsh-client-ui-...@
 | 停止 | 进程树结束，端口释放 |
 | 卸载 | 目录、快捷方式、注册表项全部清除，无残留 |
 | 安装包图标 | 已嵌入 |
-| 自带启动脚本 | `start.vbs` / `stop.vbs` / `update.vbs` 均含自带运行时查找 |
+| 自带启动脚本 | `start.vbs` / `stop.vbs` / `update.vbs` / `run-server.vbs` 均含自带运行时查找 |
+| **启动等待提示** | 点击后约 2 秒出现「正在启动…」小窗，服务就绪后自动关闭 |
+| **不再弹出黑窗** | 启动前后可见控制台窗口数量 **delta = 0**（修复前为 +1） |
+| **服务仍能长期存活** | 启动器退出 12 秒后仍在正常响应，停止后端口释放 |
 
 ## 备选：免安装压缩包
 
