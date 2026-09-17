@@ -1,0 +1,7 @@
+{
+  "bundles": [
+    "dshmarket",
+    "dsh-deepseek-quota-bar",
+    "dsh-data-manager"
+  ]
+}

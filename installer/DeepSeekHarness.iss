@@ -14,7 +14,17 @@ AppName=DeepSeek Harness
 AppVersion={#AppVersion}
 AppVerName=DeepSeek Harness {#AppVersion}
 AppPublisher=DeepSeek Harness
-DefaultDirName={autopf}\DeepSeek Harness
+; The directory this application is already installed in, so a reinstall or an
+; update lands where the user put it instead of asking again.
+;
+; Two independent memories, because they fail differently. `UsePreviousAppDir`
+; reads the uninstall entry Windows keeps for the AppId — the same entry "Apps
+; and features" uses — and {code:GetDefaultDirName} reads this installer's own
+; marker, which survives the registry cleaners that delete uninstall entries and
+; therefore leave Setup with nothing to remember. An explicit /DIR still wins
+; over both, so scripted installs keep working.
+DefaultDirName={code:GetDefaultDirName}
+UsePreviousAppDir=yes
 DefaultGroupName=DeepSeek Harness
 DisableProgramGroupPage=yes
 ; A per-user installation: no administrator prompt, and the application can
@@ -48,10 +58,25 @@ Name: "{group}\停止 DeepSeek Harness"; Filename: "{sys}\wscript.exe"; Paramete
 Name: "{group}\检查更新"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\bin\update.vbs"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\dsh.ico"; Comment: "检查并安装新版本"
 Name: "{group}\查看日志"; Filename: "{sys}\notepad.exe"; Parameters: """{app}\logs\dsh-web.log"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\dsh.ico"; Comment: "查看运行日志"
 Name: "{group}\命令行工具"; Filename: "{sys}\cmd.exe"; Parameters: "/k """"{app}\dsh.cmd"""""; WorkingDir: "{app}"; IconFilename: "{app}\assets\dsh.ico"; Comment: "打开命令行"
+; The uninstall entry Windows keeps can be removed by registry cleaners, which
+; leaves this application with no discoverable way out. A Start Menu item always
+; reaches the same uninstaller the file system carries.
+Name: "{group}\卸载 DeepSeek Harness"; Filename: "{uninstallexe}"; WorkingDir: "{app}"; IconFilename: "{app}\assets\dsh.ico"; Comment: "卸载 DeepSeek Harness"
 Name: "{autodesktop}\DeepSeek Harness"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\bin\start.vbs"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\dsh.ico"; Tasks: desktopicon
 
-[Run]
-Filename: "{sys}\wscript.exe"; Parameters: """{app}\bin\start.vbs"""; Description: "立即启动 DeepSeek Harness"; Flags: postinstall nowait skipifsilent
+; No [Run] section on purpose. Its only entry launched the application from the
+; finish page, which Setup renders as an opt-in checkbox; the installer therefore
+; ends without starting anything, and the user starts the application from the
+; shortcut it just created. Everything the entry did is still available there.
+
+[Registry]
+; This installer's own memory of where the application was installed. It is a key
+; of ours rather than the uninstall entry, so the ordinary registry cleaners that
+; sweep stale uninstall entries do not take the location with them. Removed on
+; uninstall, which is what makes a fresh install after an uninstall ask again
+; instead of resurrecting an empty directory.
+Root: HKCU; Subkey: "Software\DeepSeek Harness"; ValueType: string; ValueName: "InstallDir"; \
+    ValueData: "{app}"; Flags: uninsdeletekey
 
 [UninstallDelete]
 ; State written while the application runs is not tracked by the installer.
@@ -62,6 +87,25 @@ Type: filesandordirs; Name: "{app}\run"
 Type: dirifempty; Name: "{app}"
 
 [Code]
+{ The default directory shown on the "Select Destination Location" page.
+
+  Setup calls this while building the wizard, so `UsePreviousAppDir` has already
+  run and an explicit /DIR has already been applied — but a remembered directory
+  is returned here only when it still holds this application, so a marker left
+  over from an installation the user deleted by hand cannot send a new install
+  into a stale path. }
+function GetDefaultDirName(Param: String): String;
+var
+  Remembered: String;
+begin
+  if RegQueryStringValue(HKCU, 'Software\DeepSeek Harness', 'InstallDir', Remembered)
+     and (Remembered <> '')
+     and FileExists(AddBackslash(Remembered) + 'unins000.exe') then
+    Result := Remembered
+  else
+    Result := ExpandConstant('{autopf}\DeepSeek Harness');
+end;
+
 { The application writes its logs and process id next to itself, so a directory
   the user cannot write to would install successfully and then fail at the first
   launch. Reject such a directory while the choice can still be corrected. }
