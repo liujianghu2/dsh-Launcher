@@ -1,0 +1,10 @@
+{
+  "name": "dsh-preinstalled-plugins",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Community plugins this installer ships and enables out of the box.",
+  "dependencies": {
+    "dshmarket": "1.47.0",
+    "dsh-deepseek-quota-bar": "0.6.1"
+  }
+}

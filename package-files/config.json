@@ -1,12 +1,13 @@
 {
   "port": 3080,
+  "dataDirectory": "",
   "registries": [
     "https://registry.npmjs.org",
     "https://registry.npmmirror.com",
     "https://mirrors.cloud.tencent.com/npm",
     "https://mirrors.huaweicloud.com/repository/npm"
   ],
-  "channel": "latest",
+  "channel": "newest",
   "checkUpdates": true,
   "updateCheckHours": 6
 }
